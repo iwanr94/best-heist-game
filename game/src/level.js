@@ -1,123 +1,179 @@
-// Midnight Ledger — the Meridian Gallery floor plan. One job: the tile
-// map, what is solid, where the loot, spawn and exit sit, and the
-// line-of-sight test guards and cameras use.
-//
-// Legend: # wall, . floor, C cover (crate / display case — blocks movement
-// and sight), S thief spawn, X service exit, L the Midnight Ledger,
-// P painting, d diamond, G gold bars. 30 columns x 20 rows.
+// The Gilded Vault — the gallery floor: walls, cover, loot, patrols,
+// cameras and the exit. Every position is fixed, so a screenshot scene
+// and a real playthrough share the same room.
 
-import { TILE, COLS, ROWS } from './config.js';
+import { WORLD_WIDTH, WORLD_HEIGHT } from './config.js';
 
-const MAP = [
-  '##############################',
-  '#...........#........#.......#',
-  '#..S........#...P....#...L...#',
-  '#...........#........#.......#',
-  '#....CC...................CC.#',
-  '#...........#........#.......#',
-  '#.....C.....#........#..C....#',
-  '#...........#........#.......#',
-  '#####.##########.########.####',
-  '#...........#........#.......#',
-  '#..CC.......#........#....CC.#',
-  '#............................#',
-  '#.....C.....#........#...C...#',
-  '#...........#........#.......#',
-  '#####.##########.########.####',
-  '#...........#........#.......#',
-  '#..XX.......#...d....#...G...#',
-  '#..XX........................#',
-  '#....CC.....#........#....CC.#',
-  '##############################',
+// Axis-aligned solid rectangles. The first four are the outer walls.
+export const WALLS = [
+  { x: 0, y: 0, w: WORLD_WIDTH, h: 16 },
+  { x: 0, y: WORLD_HEIGHT - 16, w: WORLD_WIDTH, h: 16 },
+  { x: 0, y: 0, w: 16, h: WORLD_HEIGHT },
+  { x: WORLD_WIDTH - 16, y: 0, w: 16, h: WORLD_HEIGHT },
+  // Service corridor divider; the door gap is x 656..776.
+  { x: 16, y: 140, w: 640, h: 16 },
+  { x: 776, y: 140, w: 488, h: 16 },
+  // East wing divider; the door gap is y 420..520.
+  { x: 860, y: 156, w: 16, h: 264 },
+  // Vault room, top wall; the door gap is x 200..280.
+  { x: 16, y: 460, w: 184, h: 16 },
+  { x: 280, y: 460, w: 96, h: 16 },
+  // Vault room, right wall.
+  { x: 360, y: 460, w: 16, h: 244 },
 ];
 
-function tileAt(col, row) {
-  if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return '#';
-  return MAP[row][col];
+// Display pedestals: solid cover blocks the thief and the guards can
+// hide behind, and they block a watcher's line of sight.
+export const PEDESTALS = [
+  { x: 300, y: 300, w: 46, h: 46 },
+  { x: 560, y: 300, w: 46, h: 46 },
+  { x: 420, y: 480, w: 46, h: 46 },
+  { x: 700, y: 480, w: 46, h: 46 },
+  { x: 980, y: 300, w: 46, h: 46 },
+];
+
+// The vent shaft: a low crawl space along the bottom right. A thief
+// inside it is half as easy to spot, at the cost of a slow crawl.
+export const VENT = { x: 900, y: 560, w: 348, h: 128 };
+
+// Loot, three tiers. A painting lifts fast, a gem takes longer, and the
+// Sun Dial is the slow crack that opens the exit — and spikes the alarm.
+export const LOOT = [
+  { id: 'painting-ferry', kind: 'painting', name: 'Dusk Ferry', value: 400, x: 240, y: 220, channel: 0.6 },
+  { id: 'painting-amber', kind: 'painting', name: 'Amber Field', value: 400, x: 640, y: 260, channel: 0.6 },
+  { id: 'painting-orchard', kind: 'painting', name: 'Night Orchard', value: 400, x: 1080, y: 240, channel: 0.6 },
+  { id: 'gem-vesper', kind: 'gem', name: 'Vesper Ruby', value: 900, x: 443, y: 503, channel: 1.2 },
+  { id: 'gem-tide', kind: 'gem', name: 'Tide Sapphire', value: 900, x: 723, y: 503, channel: 1.2 },
+  { id: 'sundial', kind: 'dial', name: 'Sun Dial', value: 2500, x: 200, y: 590, channel: 3.0 },
+];
+
+export const GUARD_DEFS = [
+  {
+    name: 'Hall',
+    waypoints: [
+      { x: 220, y: 280 },
+      { x: 620, y: 280 },
+      { x: 620, y: 540 },
+      { x: 220, y: 540 },
+    ],
+  },
+  {
+    name: 'East',
+    waypoints: [
+      { x: 940, y: 220 },
+      { x: 1160, y: 220 },
+      { x: 1160, y: 420 },
+      { x: 940, y: 420 },
+    ],
+  },
+  {
+    name: 'Vault',
+    waypoints: [
+      { x: 400, y: 620 },
+      { x: 660, y: 620 },
+      { x: 660, y: 400 },
+      { x: 400, y: 400 },
+    ],
+  },
+];
+
+export const CAMERA_DEFS = [
+  { name: 'Cam A', x: 640, y: 24, baseAngle: Math.PI / 2, sweep: 0.87, sweepSpeed: 0.55, phase: 0 },
+  { name: 'Cam B', x: 1256, y: 360, baseAngle: Math.PI, sweep: 0.79, sweepSpeed: 0.7, phase: 1.9 },
+];
+
+// The skylight exit on the top right wall. Locked until the Sun Dial
+// is taken; walking into it with the dial ends the heist.
+export const EXIT_ZONE = { x: 1160, y: 16, w: 88, h: 44 };
+export const SPAWN = { x: 80, y: 380 };
+
+// ---------------------------------------------------------------- collision
+
+function circleHitsRect(cx, cy, r, rect) {
+  const nx = Math.max(rect.x, Math.min(cx, rect.x + rect.w));
+  const ny = Math.max(rect.y, Math.min(cy, rect.y + rect.h));
+  const dx = cx - nx;
+  const dy = cy - ny;
+  return dx * dx + dy * dy < r * r;
 }
 
-export function isSolidTile(col, row) {
-  const t = tileAt(col, row);
-  return t === '#' || t === 'C';
-}
-
-// Circle (px) against the solid grid: true when the circle overlaps a
-// solid tile. The thief, guards and smoke all move through this test.
-export function circleHitsSolid(x, y, radius) {
-  const c0 = Math.floor((x - radius) / TILE);
-  const c1 = Math.floor((x + radius) / TILE);
-  const r0 = Math.floor((y - radius) / TILE);
-  const r1 = Math.floor((y + radius) / TILE);
-  for (let r = r0; r <= r1; r += 1) {
-    for (let c = c0; c <= c1; c += 1) {
-      if (!isSolidTile(c, r)) continue;
-      const nearestX = Math.max(c * TILE, Math.min(x, (c + 1) * TILE));
-      const nearestY = Math.max(r * TILE, Math.min(y, (r + 1) * TILE));
-      const dx = x - nearestX;
-      const dy = y - nearestY;
-      if (dx * dx + dy * dy < radius * radius) return true;
-    }
-  }
+/** Whether a circle at (x, y) with radius r touches any solid rect. */
+export function collides(x, y, r) {
+  for (const w of WALLS) if (circleHitsRect(x, y, r, w)) return true;
+  for (const p of PEDESTALS) if (circleHitsRect(x, y, r, p)) return true;
   return false;
 }
 
-// Slide a circle along one axis: move, and if blocked, stay. Lets the
-// thief glide along walls instead of sticking to them.
-export function moveCircle(x, y, dx, dy, radius) {
-  let nx = x + dx;
-  if (circleHitsSolid(nx, y, radius)) nx = x;
-  let ny = y + dy;
-  if (circleHitsSolid(nx, ny, radius)) ny = y;
-  return { x: nx, y: ny };
+/**
+ * Moves a circle by (dx, dy) one axis at a time, so it slides along a
+ * wall instead of sticking to it. Mutates and returns the position.
+ */
+export function moveCircle(pos, dx, dy, r) {
+  const nx = pos.x + dx;
+  if (!collides(nx, pos.y, r)) pos.x = nx;
+  const ny = pos.y + dy;
+  if (!collides(pos.x, ny, r)) pos.y = ny;
+  return pos;
 }
 
-// Line of sight between two points (px): sample the segment; a solid
-// tile anywhere on it blocks the view. Cover blocks sight too.
-export function hasLineOfSight(x0, y0, x1, y1) {
-  const dx = x1 - x0;
-  const dy = y1 - y0;
-  const dist = Math.hypot(dx, dy);
-  const steps = Math.max(1, Math.ceil(dist / 4));
-  for (let i = 1; i < steps; i += 1) {
-    const t = i / steps;
-    const col = Math.floor((x0 + dx * t) / TILE);
-    const row = Math.floor((y0 + dy * t) / TILE);
-    if (isSolidTile(col, row)) return false;
+// ---------------------------------------------------------------- line of sight
+
+/** Whether the segment (x1,y1)-(x2,y2) crosses a rectangle (slab test). */
+function segmentHitsRect(x1, y1, x2, y2, rect) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  let tmin = 0;
+  let tmax = 1;
+  if (dx === 0) {
+    if (x1 < rect.x || x1 > rect.x + rect.w) return false;
+  } else {
+    let t1 = (rect.x - x1) / dx;
+    let t2 = (rect.x + rect.w - x1) / dx;
+    if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+    tmin = Math.max(tmin, t1);
+    tmax = Math.min(tmax, t2);
+    if (tmin > tmax) return false;
+  }
+  if (dy === 0) {
+    if (y1 < rect.y || y1 > rect.y + rect.h) return false;
+  } else {
+    let t1 = (rect.y - y1) / dy;
+    let t2 = (rect.y + rect.h - y1) / dy;
+    if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+    tmin = Math.max(tmin, t1);
+    tmax = Math.min(tmax, t2);
+    if (tmin > tmax) return false;
   }
   return true;
 }
 
-export function tileCenter(col, row) {
-  return { x: (col + 0.5) * TILE, y: (row + 0.5) * TILE };
+/** Whether the segment between two points is blocked by a wall or pedestal. */
+export function segmentBlocked(x1, y1, x2, y2) {
+  for (const w of WALLS) if (segmentHitsRect(x1, y1, x2, y2, w)) return true;
+  for (const p of PEDESTALS) if (segmentHitsRect(x1, y1, x2, y2, p)) return true;
+  return false;
 }
 
-export function buildLevel() {
-  const loot = [];
-  const exitTiles = [];
-  let spawn = { x: 2.5 * TILE, y: 2.5 * TILE };
-  for (let r = 0; r < ROWS; r += 1) {
-    for (let c = 0; c < COLS; c += 1) {
-      const t = MAP[r][c];
-      const at = tileCenter(c, r);
-      if (t === 'S') spawn = at;
-      else if (t === 'X') exitTiles.push({ col: c, row: r });
-      else if (t === 'L') loot.push({ kind: 'ledger', x: at.x, y: at.y, taken: false });
-      else if (t === 'P') loot.push({ kind: 'painting', x: at.x, y: at.y, taken: false });
-      else if (t === 'd') loot.push({ kind: 'diamond', x: at.x, y: at.y, taken: false });
-      else if (t === 'G') loot.push({ kind: 'gold', x: at.x, y: at.y, taken: false });
-    }
-  }
-  const xs = exitTiles.map((t) => t.col);
-  const ys = exitTiles.map((t) => t.row);
-  const exit = {
-    x: Math.min(...xs) * TILE,
-    y: Math.min(...ys) * TILE,
-    w: (Math.max(...xs) - Math.min(...xs) + 1) * TILE,
-    h: (Math.max(...ys) - Math.min(...ys) + 1) * TILE,
-  };
-  return { loot, spawn, exit };
+/** Whether two points can see each other across the room. */
+export function losClear(x1, y1, x2, y2) {
+  return !segmentBlocked(x1, y1, x2, y2);
 }
 
-export function mapRows() {
-  return MAP;
+/** Whether the segment passes through a circle (a smoke cloud). */
+export function segmentThroughCircle(x1, y1, x2, y2, cx, cy, r) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 === 0 ? 0 : ((cx - x1) * dx + (cy - y1) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const px = x1 + t * dx;
+  const py = y1 + t * dy;
+  const ddx = cx - px;
+  const ddy = cy - py;
+  return ddx * ddx + ddy * ddy < r * r;
+}
+
+/** Whether a point is inside the vent shaft's crawl space. */
+export function inVent(x, y) {
+  return x >= VENT.x && x <= VENT.x + VENT.w && y >= VENT.y && y <= VENT.y + VENT.h;
 }

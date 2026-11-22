@@ -1,24 +1,18 @@
-// A tiny static server for game/ (Node 22, standard library only), so
-// the entry can be played locally without a build step:
-//   node serve.ts            serves game/ on http://localhost:8080
-// It sends the MIME types a browser game needs and refuses any path
-// outside game/. A development convenience, not a web server.
-
-import { createReadStream, statSync } from 'node:fs';
+// The Gilded Vault — a local dev server for game/ (Node 22, standard
+// library only). Run `node serve.ts [--port 8080]` and open the printed
+// address; it serves game/ on localhost and nothing else.
 import { createServer } from 'node:http';
+import { createReadStream, statSync } from 'node:fs';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('./game', import.meta.url)));
-const args = process.argv.slice(2);
-const portIndex = args.indexOf('--port');
-const requested = portIndex === -1 ? 8080 : Number(args[portIndex + 1]);
-const port = Number.isInteger(requested) && requested > 0 && requested < 65536 ? requested : 8080;
+const portArg = process.argv[process.argv.indexOf('--port') + 1];
+const port = Number(portArg) > 0 && Number(portArg) < 65536 ? Number(portArg) : 8080;
 
-const MIME = {
+const types = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
@@ -26,36 +20,33 @@ const MIME = {
   '.jpeg': 'image/jpeg',
 };
 
-createServer((request, response) => {
-  const url = new URL(request.url ?? '/', 'http://localhost');
-  let pathname;
+createServer((req, res) => {
+  let path = '/';
   try {
-    pathname = decodeURIComponent(url.pathname);
+    path = decodeURIComponent(new URL(req.url ?? '/', 'http://localhost').pathname);
   } catch {
-    response.writeHead(400).end('bad request');
+    res.writeHead(400).end('bad request');
     return;
   }
-  if (pathname.endsWith('/')) pathname += 'index.html';
-  const file = resolve(join(root, normalize(pathname)));
+  if (path.endsWith('/')) path += 'index.html';
+  const file = resolve(join(root, normalize(path)));
   if (file !== root && !file.startsWith(root + sep)) {
-    response.writeHead(403).end('forbidden');
+    res.writeHead(403).end('forbidden');
     return;
   }
   let size;
   try {
-    const stats = statSync(file);
-    if (!stats.isFile()) throw new Error('not a file');
-    size = stats.size;
+    const st = statSync(file);
+    if (!st.isFile()) throw new Error('not a file');
+    size = st.size;
   } catch {
-    response.writeHead(404).end('not found');
+    res.writeHead(404).end('not found');
     return;
   }
-  response.writeHead(200, {
-    'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
+  res.writeHead(200, {
+    'content-type': types[extname(file).toLowerCase()] ?? 'application/octet-stream',
     'content-length': size,
     'cache-control': 'no-store',
   });
-  createReadStream(file).pipe(response);
-}).listen(port, '127.0.0.1', () => {
-  console.log(`game/ is on http://localhost:${port}`);
-});
+  createReadStream(file).pipe(res);
+}).listen(port, '127.0.0.1', () => console.log(`game/ is on http://localhost:${port}`));

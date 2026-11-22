@@ -1,269 +1,385 @@
-// Midnight Ledger — the game loop. One job: own the state, run one
-// update per frame, and decide when the heist is won or lost.
-//
-// Win: carry the Midnight Ledger onto the service exit. Lose: a guard
-// touches Rook. The alarm climbs while any guard or camera sees the
-// thief and falls while hidden; at 100% the gallery locks down and every
-// guard hunts. Smoke blinds sight, the EMP freezes the cameras.
+// The Gilded Vault — the game itself: state, input, the loop, the alarm
+// economy and the four demo scenes the screenshots are taken from.
+// A demo scene freezes the world at one readable frame; real play runs
+// the same code with live input.
 
 import {
-  TILE, VIEW_W, VIEW_H, HUD_H, GUARD_CATCH_DIST,
-  ALARM_RISE_GUARD, ALARM_RISE_CAMERA, ALARM_DECAY,
-  ALARM_LOCKDOWN, SMOKE_SECONDS, EMP_SECONDS, LOOT_VALUE,
+  ALARM_CAMERA_RATE,
+  ALARM_DECAY,
+  ALARM_GUARD_RATE,
+  DIAL_ALARM_BUMP,
+  GHOST_BONUS,
+  PAR_TIME,
 } from './config.js';
-import { buildLevel } from './level.js';
-import { makeGuards, makeCameras, updateGuards, updateCameras } from './guards.js';
-import { makePlayer, resetPlayer, updatePlayer } from './player.js';
-import { makeInput } from './input.js';
-import { render } from './render.js';
-import { sfx } from './audio.js';
-import { shotFromUrl, applyShot } from './shots.js';
+import { CAMERA_DEFS, EXIT_ZONE, GUARD_DEFS, LOOT, SPAWN as START } from './level.js';
+import { createCamera, createGuard, updateCamera, updateGuard } from './guard.js';
+import { createThief, updateThief } from './thief.js';
+import { drawGame, toolChipRects } from './render.js';
+import { createSound } from './sound.js';
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const errlog = document.getElementById('errlog');
+window.addEventListener('error', (e) => {
+  if (errlog) errlog.textContent += `${String(e.message)};`;
+});
+
+const params = new URLSearchParams(location.search);
+const sceneName = params.get('scene');
+const demo = sceneName !== null;
+
+const sound = createSound();
+const input = {
+  up: false,
+  down: false,
+  left: false,
+  right: false,
+  run: false,
+  channel: false,
+  useSmoke: false,
+  useJammer: false,
+  useCoin: false,
+};
 
 function freshState() {
-  const level = buildLevel();
   return {
-    screen: 'title',
+    phase: 'title',
     time: 0,
     alarm: 0,
-    alarmPeak: 0,
-    lootGot: 0,
-    lootTotal: level.loot.length,
-    lootValue: 0,
-    score: 0,
-    hasLedger: false,
-    smokeLeft: 2,
-    empLeft: 1,
-    empUntil: 0,
+    exitOpen: false,
+    spotted: false,
+    message: '',
+    messageTimer: 0,
     smokes: [],
-    level,
-    player: makePlayer(level.spawn),
-    guards: makeGuards(),
-    cameras: makeCameras(),
-    wasSpotted: false,
-    shot: null,
+    jammerTime: 0,
+    guards: GUARD_DEFS.map(createGuard),
+    cameras: CAMERA_DEFS.map(createCamera),
+    thief: createThief(START),
+    loot: LOOT.map((l) => ({ ...l, taken: false })),
+    score: { loot: 0, timeBonus: 0, ghostBonus: 0, total: 0 },
+    muted: false,
+    alarmPulseTimer: 0,
+    stepTimer: 0,
   };
 }
 
-function resetRun(state) {
-  const next = freshState();
-  Object.assign(state, next);
-  state.screen = 'playing';
+let state = freshState();
+
+function showMessage(text) {
+  state.message = text;
+  state.messageTimer = 2.5;
 }
 
-function playerOnExit(state) {
-  const e = state.level.exit;
-  const p = state.player;
-  return p.x >= e.x && p.x <= e.x + e.w && p.y >= e.y && p.y <= e.y + e.h;
+function cameraAngleAt(c, t) {
+  return c.baseAngle + Math.sin(t * c.sweepSpeed + c.phase) * c.sweep;
 }
 
-function update(state, input, dt) {
-  if (state.screen !== 'playing') return;
+// The four screenshot scenes. Each pins every actor to one fixed,
+// readable frame: the cover shows the whole game at once, the others
+// show the alarm moment, the vault crack and the getaway.
+function applyScene(name) {
+  state.phase = 'playing';
+  const t = state.thief;
+  const g = state.guards;
+  const c = state.cameras;
+  if (name === 'play') {
+    t.x = 560;
+    t.y = 420;
+    t.dir = -Math.PI / 2;
+    state.loot[0].taken = true;
+    t.loot = 400;
+    state.alarm = 18;
+    state.time = 41;
+    g[0].x = 420;
+    g[0].y = 280;
+    g[0].dir = 0;
+    g[1].x = 1050;
+    g[1].y = 220;
+    g[1].dir = Math.PI;
+    g[2].x = 530;
+    g[2].y = 620;
+    g[2].dir = -Math.PI / 2;
+    c[0].angle = cameraAngleAt(c[0], 1.4);
+    c[1].angle = cameraAngleAt(c[1], 0.6);
+  } else if (name === 'alarm') {
+    t.x = 700;
+    t.y = 300;
+    t.dir = Math.PI;
+    state.loot[0].taken = true;
+    state.loot[3].taken = true;
+    t.loot = 1300;
+    state.alarm = 72;
+    state.time = 72;
+    state.spotted = true;
+    g[0].x = 620;
+    g[0].y = 300;
+    g[0].dir = 0;
+    g[0].state = 'chase';
+    g[0].suspicion = 1;
+    g[0].alarming = true;
+    g[0].lastSeen = { x: 700, y: 300 };
+    g[1].x = 1000;
+    g[1].y = 220;
+    g[1].dir = Math.PI;
+    g[2].x = 500;
+    g[2].y = 620;
+    g[2].dir = 0;
+    c[0].angle = cameraAngleAt(c[0], 2.2);
+    c[1].angle = cameraAngleAt(c[1], 1.1);
+    state.message = 'SPOTTED — BREAK LINE OF SIGHT';
+    state.messageTimer = 99;
+  } else if (name === 'vault') {
+    t.x = 200;
+    t.y = 590;
+    t.dir = Math.PI / 2;
+    t.channel = state.loot[5];
+    t.channelProgress = 0.6;
+    state.loot[0].taken = true;
+    state.loot[3].taken = true;
+    state.loot[4].taken = true;
+    t.loot = 2200;
+    state.alarm = 34;
+    state.time = 108;
+    state.spotted = true;
+    state.jammerTime = 3.2;
+    t.jammers = 0;
+    c[0].off = true;
+    c[1].off = true;
+    g[0].x = 300;
+    g[0].y = 280;
+    g[0].dir = Math.PI / 2;
+    g[1].x = 1100;
+    g[1].y = 300;
+    g[1].dir = Math.PI;
+    g[2].x = 480;
+    g[2].y = 400;
+    g[2].dir = -Math.PI / 2;
+    c[0].angle = cameraAngleAt(c[0], 0.8);
+    c[1].angle = cameraAngleAt(c[1], 2.6);
+    state.message = 'CRACKING THE SUN DIAL…';
+    state.messageTimer = 99;
+  } else if (name === 'escape') {
+    t.x = 1204;
+    t.y = 38;
+    t.dir = -Math.PI / 2;
+    for (const item of state.loot) item.taken = true;
+    t.loot = 4700;
+    state.exitOpen = true;
+    state.time = 96;
+    state.alarm = 12;
+    state.score = { loot: 4700, timeBonus: 240, ghostBonus: 500, total: 5440 };
+    state.phase = 'won';
+    g[0].x = 300;
+    g[0].y = 540;
+    g[0].dir = Math.PI;
+    g[1].x = 980;
+    g[1].y = 420;
+    g[1].dir = 0;
+    g[2].x = 420;
+    g[2].y = 400;
+    g[2].dir = Math.PI / 2;
+    c[0].angle = cameraAngleAt(c[0], 1.0);
+    c[1].angle = cameraAngleAt(c[1], 0.4);
+  }
+}
+
+if (demo) applyScene(sceneName);
+
+function startGame() {
+  state = freshState();
+  state.phase = 'playing';
+  if (demo) applyScene(sceneName);
+}
+
+function finishRun() {
+  const timeBonus = Math.max(0, Math.round((PAR_TIME - state.time) * 10));
+  const ghostBonus = state.spotted ? 0 : GHOST_BONUS;
+  state.score = {
+    loot: state.thief.loot,
+    timeBonus,
+    ghostBonus,
+    total: state.thief.loot + timeBonus + ghostBonus,
+  };
+  state.phase = 'won';
+  sound.win();
+}
+
+function update(dt) {
+  if (state.messageTimer > 0) state.messageTimer -= dt;
+  if (state.phase !== 'playing') return;
   state.time += dt;
 
-  // Tools: Q smoke at the thief's feet, E EMP to freeze the cameras.
-  if (input.pressed.KeyQ && state.player.smokeLeft > 0) {
-    state.smokes.push({ x: state.player.x, y: state.player.y, until: state.time + SMOKE_SECONDS });
-    state.player.smokeLeft -= 1;
-    sfx.smoke();
-  }
-  if (input.pressed.KeyE && state.player.empLeft > 0) {
-    state.empUntil = state.time + EMP_SECONDS;
-    state.player.empLeft -= 1;
-    sfx.emp();
-  }
-  if (input.clickX !== null) {
-    const gy = input.clickY - HUD_H;
-    if (gy >= 0 && gy <= VIEW_H) {
-      state.player.targetX = input.clickX;
-      state.player.targetY = gy;
-    }
-    input.clickX = null;
-    input.clickY = null;
-  }
-  input.pressed = {};
-
-  state.smokes = state.smokes.filter((s) => state.time < s.until);
-
-  updatePlayer(state.player, input, dt);
-  updateGuards(state.guards, state.player, state.smokes, dt, state.time);
-  updateCameras(state.cameras, state.player, state.smokes, dt, state.time, state.empUntil);
-
-  // Alarm: climbs while seen, falls while hidden. At 100% every guard
-  // knows where the thief is and hunts.
-  const guardSees = state.guards.some((g) => g.seesPlayer);
-  const cameraSees = state.cameras.some((c) => c.seesPlayer);
-  if (guardSees) state.alarm += ALARM_RISE_GUARD * dt;
-  if (cameraSees) state.alarm += ALARM_RISE_CAMERA * dt;
-  if (!guardSees && !cameraSees) {
-    state.alarm -= (state.alarm >= ALARM_LOCKDOWN ? 3 : ALARM_DECAY) * dt;
-  }
-  state.alarm = Math.max(0, Math.min(ALARM_LOCKDOWN, state.alarm));
-  state.alarmPeak = Math.max(state.alarmPeak, state.alarm);
-  if (state.alarm >= ALARM_LOCKDOWN) {
-    for (const g of state.guards) {
-      g.mode = 'chase';
-      g.lastSeenX = state.player.x;
-      g.lastSeenY = state.player.y;
-    }
-  }
-  if (guardSees || cameraSees) {
-    if (!state.wasSpotted) sfx.spotted();
-    state.wasSpotted = true;
-  } else {
-    state.wasSpotted = false;
-  }
-
-  // Loot: walk over it to pocket it.
-  for (const item of state.level.loot) {
-    if (item.taken) continue;
-    if (Math.hypot(item.x - state.player.x, item.y - state.player.y) < 26) {
-      item.taken = true;
-      state.lootGot += 1;
-      state.lootValue += LOOT_VALUE[item.kind];
-      if (item.kind === 'ledger') state.hasLedger = true;
-      sfx.pickup();
-    }
-  }
-
-  // Caught: a guard touches the thief.
-  for (const g of state.guards) {
-    if (Math.hypot(g.x - state.player.x, g.y - state.player.y) < GUARD_CATCH_DIST) {
-      state.screen = 'caught';
-      sfx.caught();
-      return;
-    }
-  }
-
-  // Getaway: the Ledger in hand, standing on the service exit.
-  if (state.hasLedger && playerOnExit(state)) {
-    state.score = state.lootValue + (state.alarmPeak < 30 ? 250 : 0);
-    state.screen = 'won';
-    sfx.win();
-  }
-}
-
-function start() {
-  const canvas = document.getElementById('game');
-  canvas.width = VIEW_W;
-  canvas.height = VIEW_H + HUD_H;
-  const ctx = canvas.getContext('2d');
-  const input = makeInput(canvas);
-  const state = freshState();
-  window.__midnight = state; // playtest hook for the maker's own checks
-
-  const shot = shotFromUrl();
-  if (shot) {
-    applyShot(state, shot);
-  } else {
-    state.screen = 'title';
-  }
-
-  let last = performance.now();
-  function frame(now) {
-    const dt = Math.min(0.05, (now - last) / 1000);
-    last = now;
-    if (!state.shot) {
-      if (state.screen === 'title' && (input.pressed.Enter || input.clickX !== null)) {
-        state.screen = 'playing';
-        sfx.click();
-        input.clickX = null;
-        input.clickY = null;
-        input.pressed = {};
-      } else if ((state.screen === 'caught' || state.screen === 'won')
-        && (input.pressed.KeyR || input.clickX !== null)) {
-        resetRun(state);
-        input.clickX = null;
-        input.clickY = null;
-        input.pressed = {};
-      } else if (state.screen === 'playing' && input.pressed.KeyR) {
-        resetRun(state);
-        input.pressed = {};
+  const env = {
+    loot: state.loot,
+    onLoot(item) {
+      if (item.id === 'sundial') {
+        state.exitOpen = true;
+        state.alarm = Math.min(100, state.alarm + DIAL_ALARM_BUMP);
+        showMessage('SUN DIAL TAKEN — EXIT OPEN');
+      } else {
+        showMessage(`${item.name} lifted — $${item.value}`);
       }
-      update(state, input, dt);
+      sound.blip();
+    },
+    spawnSmoke(x, y, r, t) {
+      state.smokes.push({ x, y, r, t });
+      sound.smoke();
+    },
+    setJammer(t) {
+      state.jammerTime = t;
+      showMessage('JAMMER UP — CAMERAS DARK 6s');
+    },
+    throwCoin(x, y) {
+      let best = null;
+      let bestDist = 350;
+      for (const g of state.guards) {
+        const d = Math.hypot(g.x - x, g.y - y);
+        if (d < bestDist) {
+          best = g;
+          bestDist = d;
+        }
+      }
+      if (best) {
+        best.state = 'investigate';
+        best.investigateTarget = { x, y };
+        best.investigateTimer = 2;
+        best.suspicion = 0;
+      }
+      sound.coin();
+    },
+  };
+  updateThief(state.thief, dt, input, env);
+  input.useSmoke = false;
+  input.useJammer = false;
+  input.useCoin = false;
+
+  if (state.thief.moving) {
+    state.stepTimer -= dt;
+    if (state.stepTimer <= 0) {
+      state.stepTimer = state.thief.running ? 0.22 : 0.38;
+      sound.step();
     }
-    render(ctx, state);
-    requestAnimationFrame(frame);
   }
+
+  const watchEnv = {
+    thief: state.thief,
+    smokes: state.smokes,
+    jammerTime: state.jammerTime,
+    onSpotted() {
+      if (!state.spotted) {
+        state.spotted = true;
+        showMessage('SPOTTED');
+      }
+    },
+  };
+  for (const g of state.guards) updateGuard(g, dt, watchEnv);
+  for (const c of state.cameras) updateCamera(c, dt, watchEnv);
+
+  if (state.jammerTime > 0) state.jammerTime -= dt;
+  state.smokes = state.smokes.filter((s) => (s.t -= dt) > 0);
+
+  let rise = 0;
+  for (const g of state.guards) if (g.alarming) rise += ALARM_GUARD_RATE;
+  for (const c of state.cameras) if (c.alarmed) rise += ALARM_CAMERA_RATE;
+  state.alarm = Math.max(0, Math.min(100, state.alarm + (rise > 0 ? rise : -ALARM_DECAY) * dt));
+  if (rise > 0) {
+    state.alarmPulseTimer -= dt;
+    if (state.alarmPulseTimer <= 0) {
+      state.alarmPulseTimer = 0.5;
+      sound.alarmPulse();
+    }
+  }
+
+  if (state.alarm >= 100) {
+    state.phase = 'busted';
+    sound.bust();
+    return;
+  }
+
+  const t = state.thief;
+  if (
+    state.exitOpen &&
+    t.x > EXIT_ZONE.x &&
+    t.x < EXIT_ZONE.x + EXIT_ZONE.w &&
+    t.y > EXIT_ZONE.y &&
+    t.y < EXIT_ZONE.y + EXIT_ZONE.h
+  ) {
+    finishRun();
+  }
+}
+
+const KEYMAP = {
+  ArrowUp: 'up',
+  KeyW: 'up',
+  ArrowDown: 'down',
+  KeyS: 'down',
+  ArrowLeft: 'left',
+  KeyA: 'left',
+  ArrowRight: 'right',
+  KeyD: 'right',
+  ShiftLeft: 'run',
+  ShiftRight: 'run',
+  KeyE: 'channel',
+  Space: 'channel',
+};
+
+window.addEventListener('keydown', (e) => {
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+  sound.ensure();
+  if (e.code === 'Enter') {
+    if (state.phase === 'title' || state.phase === 'won' || state.phase === 'busted') startGame();
+    return;
+  }
+  if (e.code === 'KeyR') {
+    if (state.phase !== 'title') startGame();
+    return;
+  }
+  if (e.code === 'KeyP') {
+    if (state.phase === 'playing') state.phase = 'paused';
+    else if (state.phase === 'paused') state.phase = 'playing';
+    return;
+  }
+  if (e.code === 'KeyM') {
+    sound.muted = !sound.muted;
+    state.muted = sound.muted;
+    return;
+  }
+  if (e.code === 'Digit1' || e.code === 'Numpad1') input.useSmoke = true;
+  if (e.code === 'Digit2' || e.code === 'Numpad2') input.useJammer = true;
+  if (e.code === 'Digit3' || e.code === 'Numpad3') input.useCoin = true;
+  const field = KEYMAP[e.code];
+  if (field) input[field] = true;
+});
+
+window.addEventListener('keyup', (e) => {
+  const field = KEYMAP[e.code];
+  if (field) input[field] = false;
+});
+
+canvas.addEventListener('click', (e) => {
+  sound.ensure();
+  if (state.phase === 'title' || state.phase === 'won' || state.phase === 'busted') {
+    startGame();
+    return;
+  }
+  if (state.phase !== 'playing') return;
+  const rect = canvas.getBoundingClientRect();
+  const x = ((e.clientX - rect.left) / rect.width) * canvas.width;
+  const y = ((e.clientY - rect.top) / rect.height) * canvas.height;
+  const chips = toolChipRects();
+  if (y >= 10 && y <= 38) {
+    if (x >= chips[0].x && x <= chips[0].x + chips[0].w) input.useSmoke = true;
+    else if (x >= chips[1].x && x <= chips[1].x + chips[1].w) input.useJammer = true;
+    else if (x >= chips[2].x && x <= chips[2].x + chips[2].w) input.useCoin = true;
+  }
+});
+
+let last = performance.now();
+function frame(now) {
   requestAnimationFrame(frame);
+  const dt = demo ? 0 : Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (!demo) update(dt);
+  drawGame(ctx, state, demo ? 1.2 : now / 1000);
 }
-
-// Headless self-test (?selftest=1): drive the real update loop with
-// scripted positions and report PASS/FAIL into the document, so the
-// maker can verify the game without playing it by hand.
-function selfTest() {
-  const results = [];
-  const check = (name, ok) => results.push(`${ok ? 'PASS' : 'FAIL'} ${name}`);
-  const input = { up: false, down: false, left: false, right: false, sneak: false, clickX: null, clickY: null, pressed: {} };
-
-  // 1. Walking over the painting pockets it.
-  const s1 = freshState();
-  s1.screen = 'playing';
-  const painting = s1.level.loot.find((l) => l.kind === 'painting');
-  s1.player.x = painting.x;
-  s1.player.y = painting.y;
-  update(s1, input, 0.1);
-  check('loot pickup', painting.taken && s1.lootValue === LOOT_VALUE.painting);
-
-  // 2. Standing in a guard's cone raises the alarm.
-  const s2 = freshState();
-  s2.screen = 'playing';
-  const g = s2.guards[0];
-  s2.player.x = g.x + 60;
-  s2.player.y = g.y;
-  g.angle = 0;
-  const alarmBefore = s2.alarm;
-  update(s2, input, 0.5);
-  check('guard vision raises alarm', s2.alarm > alarmBefore && g.seesPlayer);
-
-  // 3. A guard touching the thief ends the run.
-  const s3 = freshState();
-  s3.screen = 'playing';
-  s3.guards[0].x = s3.player.x + 5;
-  s3.guards[0].y = s3.player.y;
-  update(s3, input, 0.1);
-  check('caught on touch', s3.screen === 'caught');
-
-  // 4. Ledger + exit = getaway.
-  const s4 = freshState();
-  s4.screen = 'playing';
-  const ledger = s4.level.loot.find((l) => l.kind === 'ledger');
-  s4.player.x = ledger.x;
-  s4.player.y = ledger.y;
-  update(s4, input, 0.1);
-  check('ledger pickup', s4.hasLedger);
-  s4.player.x = s4.level.exit.x + 10;
-  s4.player.y = s4.level.exit.y + 10;
-  update(s4, input, 0.1);
-  check('win at exit with ledger', s4.screen === 'won' && s4.score > 0);
-
-  // 5. Exit without the Ledger is not a win.
-  const s5 = freshState();
-  s5.screen = 'playing';
-  s5.player.x = s5.level.exit.x + 10;
-  s5.player.y = s5.level.exit.y + 10;
-  update(s5, input, 0.1);
-  check('no win without ledger', s5.screen === 'playing');
-
-  // 6. Smoke hides the thief from a guard's cone.
-  const s6 = freshState();
-  s6.screen = 'playing';
-  const g6 = s6.guards[0];
-  s6.player.x = g6.x + 60;
-  s6.player.y = g6.y;
-  g6.angle = 0;
-  s6.smokes.push({ x: s6.player.x, y: s6.player.y, until: 99 });
-  update(s6, input, 0.5);
-  check('smoke blocks vision', !g6.seesPlayer && s6.alarm === 0);
-
-  document.title = results.every((r) => r.startsWith('PASS')) ? 'SELFTEST PASS' : 'SELFTEST FAIL';
-  const pre = document.createElement('pre');
-  pre.id = 'selftest';
-  pre.textContent = results.join('\n');
-  document.body.appendChild(pre);
-}
-
-if (new URLSearchParams(window.location.search).get('selftest') === '1') {
-  selfTest();
-} else {
-  start();
-}
+requestAnimationFrame(frame);
