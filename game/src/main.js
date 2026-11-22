@@ -1,385 +1,305 @@
-// The Gilded Vault — the game itself: state, input, the loop, the alarm
-// economy and the four demo scenes the screenshots are taken from.
-// A demo scene freezes the world at one readable frame; real play runs
-// the same code with live input.
+// The Aurum Job — main: the game loop, the state machine, the HUD and the
+// contextual hints. One clear goal, readable in five seconds: steal the Sun
+// Dial and escape. Fixed timestep, seeded world, deterministic screenshots.
 
+import { CONFIG } from './config.js';
 import {
-  ALARM_CAMERA_RATE,
-  ALARM_DECAY,
-  ALARM_GUARD_RATE,
-  DIAL_ALARM_BUMP,
-  GHOST_BONUS,
-  PAR_TIME,
-} from './config.js';
-import { CAMERA_DEFS, EXIT_ZONE, GUARD_DEFS, LOOT, SPAWN as START } from './level.js';
-import { createCamera, createGuard, updateCamera, updateGuard } from './guard.js';
-import { createThief, updateThief } from './thief.js';
-import { drawGame, toolChipRects } from './render.js';
-import { createSound } from './sound.js';
+  createWorld,
+  moveWithCollision,
+  updateWorld,
+  nearestLoot,
+  takeLoot,
+  dropSmoke,
+  fireJammer,
+} from './world.js';
+import { render } from './render.js';
+import { createAudio } from './audio.js';
+import { createInput } from './input.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const errlog = document.getElementById('errlog');
-window.addEventListener('error', (e) => {
-  if (errlog) errlog.textContent += `${String(e.message)};`;
-});
-
-const params = new URLSearchParams(location.search);
-const sceneName = params.get('scene');
-const demo = sceneName !== null;
-
-const sound = createSound();
-const input = {
-  up: false,
-  down: false,
-  left: false,
-  right: false,
-  run: false,
-  channel: false,
-  useSmoke: false,
-  useJammer: false,
-  useCoin: false,
+const hud = {
+  objective: document.getElementById('hud-objective'),
+  loot: document.getElementById('hud-loot'),
+  timer: document.getElementById('hud-timer'),
+  score: document.getElementById('hud-score'),
+  alarmFill: document.getElementById('alarm-fill'),
+  alarmText: document.getElementById('alarm-text'),
+  tools: document.getElementById('hud-tools'),
+  hint: document.getElementById('hint'),
+  menu: document.getElementById('menu-overlay'),
+  win: document.getElementById('win-overlay'),
+  caught: document.getElementById('caught-overlay'),
+  winBreakdown: document.getElementById('win-breakdown'),
+  winTotal: document.getElementById('win-total'),
+  startButton: document.getElementById('start-button'),
 };
 
-function freshState() {
-  return {
-    phase: 'title',
-    time: 0,
-    alarm: 0,
-    exitOpen: false,
-    spotted: false,
-    message: '',
-    messageTimer: 0,
-    smokes: [],
-    jammerTime: 0,
-    guards: GUARD_DEFS.map(createGuard),
-    cameras: CAMERA_DEFS.map(createCamera),
-    thief: createThief(START),
-    loot: LOOT.map((l) => ({ ...l, taken: false })),
-    score: { loot: 0, timeBonus: 0, ghostBonus: 0, total: 0 },
-    muted: false,
-    alarmPulseTimer: 0,
-    stepTimer: 0,
-  };
+const params = new URLSearchParams(window.location.search);
+const shot = params.get('shot') || '';
+const seed = Number(params.get('seed') || 1) || 1;
+
+const audio = createAudio();
+const input = createInput();
+
+let world = createWorld(seed);
+let player = { x: CONFIG.playerStart.x, y: CONFIG.playerStart.y };
+let state = 'menu';
+let clock = 0;
+let spottedBefore = false;
+let hintText = '';
+let hintUntil = 0;
+let tickTimer = 0;
+let finalScore = null;
+
+function formatTime(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-let state = freshState();
-
-function showMessage(text) {
-  state.message = text;
-  state.messageTimer = 2.5;
+function showOverlay(which) {
+  hud.menu.classList.toggle('hidden', which !== 'menu');
+  hud.win.classList.toggle('hidden', which !== 'win');
+  hud.caught.classList.toggle('hidden', which !== 'caught');
 }
-
-function cameraAngleAt(c, t) {
-  return c.baseAngle + Math.sin(t * c.sweepSpeed + c.phase) * c.sweep;
-}
-
-// The four screenshot scenes. Each pins every actor to one fixed,
-// readable frame: the cover shows the whole game at once, the others
-// show the alarm moment, the vault crack and the getaway.
-function applyScene(name) {
-  state.phase = 'playing';
-  const t = state.thief;
-  const g = state.guards;
-  const c = state.cameras;
-  if (name === 'play') {
-    t.x = 560;
-    t.y = 420;
-    t.dir = -Math.PI / 2;
-    state.loot[0].taken = true;
-    t.loot = 400;
-    state.alarm = 18;
-    state.time = 41;
-    g[0].x = 420;
-    g[0].y = 280;
-    g[0].dir = 0;
-    g[1].x = 1050;
-    g[1].y = 220;
-    g[1].dir = Math.PI;
-    g[2].x = 530;
-    g[2].y = 620;
-    g[2].dir = -Math.PI / 2;
-    c[0].angle = cameraAngleAt(c[0], 1.4);
-    c[1].angle = cameraAngleAt(c[1], 0.6);
-  } else if (name === 'alarm') {
-    t.x = 700;
-    t.y = 300;
-    t.dir = Math.PI;
-    state.loot[0].taken = true;
-    state.loot[3].taken = true;
-    t.loot = 1300;
-    state.alarm = 72;
-    state.time = 72;
-    state.spotted = true;
-    g[0].x = 620;
-    g[0].y = 300;
-    g[0].dir = 0;
-    g[0].state = 'chase';
-    g[0].suspicion = 1;
-    g[0].alarming = true;
-    g[0].lastSeen = { x: 700, y: 300 };
-    g[1].x = 1000;
-    g[1].y = 220;
-    g[1].dir = Math.PI;
-    g[2].x = 500;
-    g[2].y = 620;
-    g[2].dir = 0;
-    c[0].angle = cameraAngleAt(c[0], 2.2);
-    c[1].angle = cameraAngleAt(c[1], 1.1);
-    state.message = 'SPOTTED — BREAK LINE OF SIGHT';
-    state.messageTimer = 99;
-  } else if (name === 'vault') {
-    t.x = 200;
-    t.y = 590;
-    t.dir = Math.PI / 2;
-    t.channel = state.loot[5];
-    t.channelProgress = 0.6;
-    state.loot[0].taken = true;
-    state.loot[3].taken = true;
-    state.loot[4].taken = true;
-    t.loot = 2200;
-    state.alarm = 34;
-    state.time = 108;
-    state.spotted = true;
-    state.jammerTime = 3.2;
-    t.jammers = 0;
-    c[0].off = true;
-    c[1].off = true;
-    g[0].x = 300;
-    g[0].y = 280;
-    g[0].dir = Math.PI / 2;
-    g[1].x = 1100;
-    g[1].y = 300;
-    g[1].dir = Math.PI;
-    g[2].x = 480;
-    g[2].y = 400;
-    g[2].dir = -Math.PI / 2;
-    c[0].angle = cameraAngleAt(c[0], 0.8);
-    c[1].angle = cameraAngleAt(c[1], 2.6);
-    state.message = 'CRACKING THE SUN DIAL…';
-    state.messageTimer = 99;
-  } else if (name === 'escape') {
-    t.x = 1204;
-    t.y = 38;
-    t.dir = -Math.PI / 2;
-    for (const item of state.loot) item.taken = true;
-    t.loot = 4700;
-    state.exitOpen = true;
-    state.time = 96;
-    state.alarm = 12;
-    state.score = { loot: 4700, timeBonus: 240, ghostBonus: 500, total: 5440 };
-    state.phase = 'won';
-    g[0].x = 300;
-    g[0].y = 540;
-    g[0].dir = Math.PI;
-    g[1].x = 980;
-    g[1].y = 420;
-    g[1].dir = 0;
-    g[2].x = 420;
-    g[2].y = 400;
-    g[2].dir = Math.PI / 2;
-    c[0].angle = cameraAngleAt(c[0], 1.0);
-    c[1].angle = cameraAngleAt(c[1], 0.4);
-  }
-}
-
-if (demo) applyScene(sceneName);
 
 function startGame() {
-  state = freshState();
-  state.phase = 'playing';
-  if (demo) applyScene(sceneName);
+  world = createWorld(seed);
+  player = { x: CONFIG.playerStart.x, y: CONFIG.playerStart.y };
+  state = 'playing';
+  spottedBefore = false;
+  finalScore = null;
+  hintText = 'WASD / arrows to move — stay out of the amber cones';
+  hintUntil = clock + 6;
+  audio.unlock();
+  showOverlay(null);
 }
 
-function finishRun() {
-  const timeBonus = Math.max(0, Math.round((PAR_TIME - state.time) * 10));
-  const ghostBonus = state.spotted ? 0 : GHOST_BONUS;
-  state.score = {
-    loot: state.thief.loot,
+function computeFinalScore() {
+  const timeBonus = Math.max(0, Math.round(CONFIG.parSeconds - world.elapsed)) * 10;
+  const ghostBonus = world.everSeen ? 0 : CONFIG.ghostBonus;
+  return {
+    loot: world.score,
     timeBonus,
     ghostBonus,
-    total: state.thief.loot + timeBonus + ghostBonus,
+    total: world.score + timeBonus + ghostBonus,
   };
-  state.phase = 'won';
-  sound.win();
 }
 
-function update(dt) {
-  if (state.messageTimer > 0) state.messageTimer -= dt;
-  if (state.phase !== 'playing') return;
-  state.time += dt;
+function endGame(won) {
+  if (won) {
+    finalScore = computeFinalScore();
+    hud.winBreakdown.innerHTML =
+      `<div><span>Loot</span><b>$${finalScore.loot.toLocaleString()}</b></div>` +
+      `<div><span>Time bonus (par ${CONFIG.parSeconds}s)</span><b>$${finalScore.timeBonus.toLocaleString()}</b></div>` +
+      `<div><span>Ghost bonus (never seen)</span><b>$${finalScore.ghostBonus.toLocaleString()}</b></div>`;
+    hud.winTotal.textContent = `$${finalScore.total.toLocaleString()}`;
+    state = 'win';
+    audio.win();
+    audio.setAlarmLevel(0);
+    showOverlay('win');
+  } else {
+    state = 'caught';
+    audio.caught();
+    audio.setAlarmLevel(0);
+    showOverlay('caught');
+  }
+}
 
-  const env = {
-    loot: state.loot,
-    onLoot(item) {
-      if (item.id === 'sundial') {
-        state.exitOpen = true;
-        state.alarm = Math.min(100, state.alarm + DIAL_ALARM_BUMP);
-        showMessage('SUN DIAL TAKEN — EXIT OPEN');
-      } else {
-        showMessage(`${item.name} lifted — $${item.value}`);
-      }
-      sound.blip();
-    },
-    spawnSmoke(x, y, r, t) {
-      state.smokes.push({ x, y, r, t });
-      sound.smoke();
-    },
-    setJammer(t) {
-      state.jammerTime = t;
-      showMessage('JAMMER UP — CAMERAS DARK 6s');
-    },
-    throwCoin(x, y) {
-      let best = null;
-      let bestDist = 350;
-      for (const g of state.guards) {
-        const d = Math.hypot(g.x - x, g.y - y);
-        if (d < bestDist) {
-          best = g;
-          bestDist = d;
-        }
-      }
-      if (best) {
-        best.state = 'investigate';
-        best.investigateTarget = { x, y };
-        best.investigateTimer = 2;
-        best.suspicion = 0;
-      }
-      sound.coin();
-    },
-  };
-  updateThief(state.thief, dt, input, env);
-  input.useSmoke = false;
-  input.useJammer = false;
-  input.useCoin = false;
+function updateHint(anySeen, dt) {
+  if (anySeen && !spottedBefore) {
+    spottedBefore = true;
+    hintText = "Break line of sight — the alarm fades when you're hidden";
+    hintUntil = clock + 5;
+  }
+  const near = nearestLoot(world, player, 90);
+  if (state === 'playing' && !anySeen && near && clock > hintUntil) {
+    hintText = 'Hold E to pick the lock';
+    hintUntil = clock + 2;
+  }
+  hud.hint.textContent = clock < hintUntil ? hintText : '';
+  hud.hint.classList.toggle('visible', clock < hintUntil);
+}
 
-  if (state.thief.moving) {
-    state.stepTimer -= dt;
-    if (state.stepTimer <= 0) {
-      state.stepTimer = state.thief.running ? 0.22 : 0.38;
-      sound.step();
-    }
+function updateHud() {
+  hud.objective.textContent = world.dialTaken
+    ? 'Sun Dial stolen — reach the green exit'
+    : 'Steal the Sun Dial and escape';
+  hud.loot.textContent = `Loot ${world.tiersTaken}/3`;
+  hud.timer.textContent = formatTime(world.elapsed);
+  hud.score.textContent = `$${world.score.toLocaleString()}`;
+  const alarm = Math.round(world.alarm);
+  hud.alarmFill.style.width = `${alarm}%`;
+  hud.alarmFill.style.background =
+    alarm < 34 ? CONFIG.colors.alarmLow : alarm < 67 ? CONFIG.colors.alarmMid : CONFIG.colors.alarmHigh;
+  hud.alarmText.textContent = `ALARM ${alarm}`;
+  hud.tools.textContent = `Smoke ${world.smokeLeft} · Jammer ${world.jammerLeft}`;
+}
+
+function step(dt) {
+  clock += dt;
+  if (state !== 'playing') return;
+
+  const move = input.moveVector();
+  const moving = move.x !== 0 || move.y !== 0;
+  if (moving) {
+    const speed = CONFIG.player.speed * dt;
+    moveWithCollision(player, move.x * speed, move.y * speed, world.solids, CONFIG.player.radius);
+    world.channelTarget = null;
+    world.channelProgress = 0;
   }
 
-  const watchEnv = {
-    thief: state.thief,
-    smokes: state.smokes,
-    jammerTime: state.jammerTime,
-    onSpotted() {
-      if (!state.spotted) {
-        state.spotted = true;
-        showMessage('SPOTTED');
-      }
-    },
-  };
-  for (const g of state.guards) updateGuard(g, dt, watchEnv);
-  for (const c of state.cameras) updateCamera(c, dt, watchEnv);
+  const anySeen = updateWorld(world, player, dt, clock);
+  audio.setAlarmLevel(world.alarm / 100);
 
-  if (state.jammerTime > 0) state.jammerTime -= dt;
-  state.smokes = state.smokes.filter((s) => (s.t -= dt) > 0);
-
-  let rise = 0;
-  for (const g of state.guards) if (g.alarming) rise += ALARM_GUARD_RATE;
-  for (const c of state.cameras) if (c.alarmed) rise += ALARM_CAMERA_RATE;
-  state.alarm = Math.max(0, Math.min(100, state.alarm + (rise > 0 ? rise : -ALARM_DECAY) * dt));
-  if (rise > 0) {
-    state.alarmPulseTimer -= dt;
-    if (state.alarmPulseTimer <= 0) {
-      state.alarmPulseTimer = 0.5;
-      sound.alarmPulse();
+  const near = nearestLoot(world, player, 56);
+  if (input.isDown('interact') && near && !moving) {
+    if (world.channelTarget !== near) {
+      world.channelTarget = near;
+      world.channelProgress = 0;
     }
+    world.channelProgress += dt;
+    tickTimer += dt;
+    if (tickTimer > 0.15) {
+      tickTimer = 0;
+      audio.tick();
+    }
+    if (world.channelProgress >= near.channel) {
+      takeLoot(world, near);
+      if (near.kind === 'dial') audio.dial();
+      else audio.pickup();
+      world.channelTarget = null;
+      world.channelProgress = 0;
+    }
+  } else {
+    world.channelTarget = null;
+    world.channelProgress = 0;
+    tickTimer = 0;
   }
 
-  if (state.alarm >= 100) {
-    state.phase = 'busted';
-    sound.bust();
+  if (input.wasPressed('smoke') && dropSmoke(world, player, clock)) audio.smoke();
+  if (input.wasPressed('jammer') && fireJammer(world, player, clock)) audio.jammer();
+
+  updateHint(anySeen, dt);
+
+  if (world.alarm >= 100) {
+    endGame(false);
     return;
   }
-
-  const t = state.thief;
+  const z = CONFIG.exitZone;
   if (
-    state.exitOpen &&
-    t.x > EXIT_ZONE.x &&
-    t.x < EXIT_ZONE.x + EXIT_ZONE.w &&
-    t.y > EXIT_ZONE.y &&
-    t.y < EXIT_ZONE.y + EXIT_ZONE.h
+    world.exitOpen &&
+    player.x > z.x - 6 &&
+    player.x < z.x + z.w + 6 &&
+    player.y > z.y - 10 &&
+    player.y < z.y + z.h + 6
   ) {
-    finishRun();
+    endGame(true);
   }
 }
 
-const KEYMAP = {
-  ArrowUp: 'up',
-  KeyW: 'up',
-  ArrowDown: 'down',
-  KeyS: 'down',
-  ArrowLeft: 'left',
-  KeyA: 'left',
-  ArrowRight: 'right',
-  KeyD: 'right',
-  ShiftLeft: 'run',
-  ShiftRight: 'run',
-  KeyE: 'channel',
-  Space: 'channel',
-};
-
-window.addEventListener('keydown', (e) => {
-  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
-  sound.ensure();
-  if (e.code === 'Enter') {
-    if (state.phase === 'title' || state.phase === 'won' || state.phase === 'busted') startGame();
-    return;
+function frame() {
+  const dt = 1 / 60;
+  if (input.wasPressed('pause') && state === 'playing') {
+    state = 'paused';
+    hud.hint.textContent = 'Paused — press P to continue';
+    hud.hint.classList.add('visible');
+  } else if (input.wasPressed('pause') && state === 'paused') {
+    state = 'playing';
+    hud.hint.classList.remove('visible');
   }
-  if (e.code === 'KeyR') {
-    if (state.phase !== 'title') startGame();
-    return;
-  }
-  if (e.code === 'KeyP') {
-    if (state.phase === 'playing') state.phase = 'paused';
-    else if (state.phase === 'paused') state.phase = 'playing';
-    return;
-  }
-  if (e.code === 'KeyM') {
-    sound.muted = !sound.muted;
-    state.muted = sound.muted;
-    return;
-  }
-  if (e.code === 'Digit1' || e.code === 'Numpad1') input.useSmoke = true;
-  if (e.code === 'Digit2' || e.code === 'Numpad2') input.useJammer = true;
-  if (e.code === 'Digit3' || e.code === 'Numpad3') input.useCoin = true;
-  const field = KEYMAP[e.code];
-  if (field) input[field] = true;
-});
-
-window.addEventListener('keyup', (e) => {
-  const field = KEYMAP[e.code];
-  if (field) input[field] = false;
-});
-
-canvas.addEventListener('click', (e) => {
-  sound.ensure();
-  if (state.phase === 'title' || state.phase === 'won' || state.phase === 'busted') {
+  if (state === 'menu' && (input.wasPressed('start') || input.clicked())) startGame();
+  if ((state === 'caught' || state === 'win') && (input.wasPressed('retry') || input.wasPressed('start'))) {
     startGame();
+  }
+  if (state !== 'paused') step(dt);
+  updateHud();
+  render(ctx, world, player, clock);
+  input.endFrame();
+  requestAnimationFrame(frame);
+}
+
+function stageShot(name) {
+  if (name === 'start') {
+    state = 'menu';
+    showOverlay('menu');
     return;
   }
-  if (state.phase !== 'playing') return;
-  const rect = canvas.getBoundingClientRect();
-  const x = ((e.clientX - rect.left) / rect.width) * canvas.width;
-  const y = ((e.clientY - rect.top) / rect.height) * canvas.height;
-  const chips = toolChipRects();
-  if (y >= 10 && y <= 38) {
-    if (x >= chips[0].x && x <= chips[0].x + chips[0].w) input.useSmoke = true;
-    else if (x >= chips[1].x && x <= chips[1].x + chips[1].w) input.useJammer = true;
-    else if (x >= chips[2].x && x <= chips[2].x + chips[2].w) input.useCoin = true;
+  if (name === 'play') {
+    startGame();
+    world.loot[0].taken = true;
+    world.lootTaken = 1;
+    world.score = 400;
+    world.tiers.painting = true;
+    world.tiersTaken = 1;
+    world.alarm = 35;
+    world.elapsed = 47;
+    player.x = 430;
+    player.y = 210;
+    world.guards[0].x = 420;
+    world.guards[0].y = 150;
+    world.guards[0].angle = Math.PI / 2;
+    world.guards[0].waypointIndex = 1;
+    world.guards[2].x = 300;
+    world.guards[2].y = 620;
+    world.guards[2].angle = 0;
+    world.cameras[0].angle = Math.PI / 2 + 0.5;
+    clock = 12;
+    return;
   }
+  if (name === 'win') {
+    startGame();
+    for (const item of world.loot) item.taken = true;
+    world.lootTaken = 6;
+    world.score = 5500;
+    world.tiers = { painting: true, gem: true, dial: true };
+    world.tiersTaken = 3;
+    world.dialTaken = true;
+    world.exitOpen = true;
+    world.elapsed = 96;
+    player.x = 95;
+    player.y = 766;
+    clock = 12;
+    endGame(true);
+    return;
+  }
+  if (name === 'night') {
+    startGame();
+    world.alarm = 72;
+    world.everSeen = true;
+    world.elapsed = 83;
+    // Player tucked behind the west wall; the guard has lost sight and is
+    // searching, so the alarm falls instead of ending the game mid-shot.
+    player.x = 270;
+    player.y = 500;
+    const guard = world.guards[0];
+    guard.state = 'search';
+    guard.searchTime = 0;
+    guard.suspicion = 1;
+    guard.x = 430;
+    guard.y = 420;
+    guard.angle = Math.atan2(player.y - guard.y, player.x - guard.x);
+    guard.searchAngle = guard.angle;
+    guard.lastSeen = { x: player.x, y: player.y };
+    world.guards[2].x = 520;
+    world.guards[2].y = 700;
+    world.guards[2].angle = Math.PI;
+    world.spottedFlash = 0.6;
+    hintText = "Break line of sight — the alarm fades when you're hidden";
+    hintUntil = clock + 30;
+    clock = 12;
+  }
+}
+
+hud.startButton.addEventListener('click', () => {
+  audio.unlock();
+  startGame();
 });
 
-let last = performance.now();
-function frame(now) {
-  requestAnimationFrame(frame);
-  const dt = demo ? 0 : Math.min(0.05, (now - last) / 1000);
-  last = now;
-  if (!demo) update(dt);
-  drawGame(ctx, state, demo ? 1.2 : now / 1000);
+if (shot) {
+  stageShot(shot);
+} else {
+  showOverlay('menu');
 }
 requestAnimationFrame(frame);

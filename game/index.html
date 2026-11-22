@@ -3,14 +3,54 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>The Gilded Vault — a heist game</title>
+<title>The Aurum Job — a heist game</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<main class="stage">
+<div id="wrap">
   <canvas id="game" width="1280" height="800"></canvas>
-  <div id="errlog" hidden></div>
-</main>
-<script type="module" src="./src/main.js"></script>
+  <header id="hud">
+    <div class="hud-left">
+      <div id="hud-objective">Steal the Sun Dial and escape</div>
+      <div id="hud-loot">Loot 0/3</div>
+    </div>
+    <div class="hud-mid">
+      <div id="hud-timer">0:00</div>
+      <div id="hud-score">$0</div>
+    </div>
+    <div class="hud-right">
+      <div id="alarm-meter"><div id="alarm-fill"></div><span id="alarm-text">ALARM 0</span></div>
+      <div id="hud-tools">Smoke 2 · Jammer 1</div>
+    </div>
+  </header>
+  <div id="hint"></div>
+  <div id="menu-overlay" class="overlay">
+    <div class="panel">
+      <h1>The Aurum Job</h1>
+      <p class="tagline">One night. One gallery. One golden dial.</p>
+      <p class="howto">WASD or arrows to move · Hold E to pick a lock<br>
+      Q throws smoke · F jams a camera · Stay out of the amber cones</p>
+      <button id="start-button" type="button">Start the job</button>
+      <p class="goal">Steal the Sun Dial, then reach the green exit. Ghost bonus $500 if nobody ever sees you.</p>
+    </div>
+  </div>
+  <div id="win-overlay" class="overlay hidden">
+    <div class="panel">
+      <h1>Clean getaway</h1>
+      <p class="tagline">The Sun Dial is yours. Moth vanishes into the night.</p>
+      <div id="win-breakdown"></div>
+      <div class="total">Total <span id="win-total">$0</span></div>
+      <p class="goal">Press R to run it again.</p>
+    </div>
+  </div>
+  <div id="caught-overlay" class="overlay hidden">
+    <div class="panel">
+      <h1>Caught!</h1>
+      <p class="tagline">The alarm hit 100 and the gallery doors slammed shut.</p>
+      <p class="goal">Press R to try again — break line of sight and the alarm fades.</p>
+    </div>
+  </div>
+</div>
+<script type="module" src="src/main.js"></script>
 </body>
 </html>

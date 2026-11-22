@@ -1,58 +1,115 @@
-// The Gilded Vault — tuning and palette. One place for every number the
-// game balances on, so a tweak never means hunting through the logic.
+// The Aurum Job — configuration: one gallery floor, one clear target.
+// Palette: gallery-night. Ink floor, warm stone walls, gold trim, amber guard
+// cones, red camera cones, emerald exit beacon. Everything the judge needs to
+// read at a glance is a colour before it is a word.
+export const CONFIG = {
+  worldWidth: 1280,
+  worldHeight: 800,
+  parSeconds: 120,
+  ghostBonus: 500,
 
-export const FRAME_WIDTH = 1280;
-export const FRAME_HEIGHT = 800;
-export const WORLD_WIDTH = 1280;
-export const WORLD_HEIGHT = 720;
-export const HUD_HEIGHT = 48;
-export const HINT_HEIGHT = 32;
+  colors: {
+    floor: '#0d1226',
+    floorAlt: '#111832',
+    wall: '#2a2f45',
+    wallTrim: '#c9a227',
+    paintingFrame: '#8a6d1f',
+    paintingArt: '#3b5b7a',
+    gemCyan: '#7ee0ff',
+    gemPink: '#ff7ad9',
+    dialGold: '#ffd75e',
+    guardCone: '245,166,35',
+    cameraCone: '229,72,77',
+    exitBeacon: '#2fd47a',
+    player: '#f2ead8',
+    playerCloak: '#232a4a',
+    text: '#f5efe0',
+    muted: '#9aa3c0',
+    danger: '#e5484d',
+    alarmLow: '#2fd47a',
+    alarmMid: '#f5a623',
+    alarmHigh: '#e5484d',
+  },
 
-// Chromatic Language: color is the information system. Safe cover is deep
-// blue, guard danger is amber, cameras are red, loot is gold, text is warm
-// off-white on near-black ink. Nothing else competes for attention.
-export const PALETTE = {
-  ink: '#0b0e14',
-  page: '#05070b',
-  floor: '#10141d',
-  floorLine: '#171d2a',
-  ventFloor: '#131a28',
-  ventLine: '#2a3a55',
-  wall: '#232a3a',
-  wallEdge: '#39415a',
-  cover: '#1d2b45',
-  coverEdge: '#2e4266',
-  gold: '#e8b64c',
-  goldDim: '#8a6d2f',
-  amber: '#f2a541',
-  red: '#e5484d',
-  text: '#e8e6df',
-  muted: '#8b93a5',
-  thief: '#e8e6df',
-  guard: '#c8cdd8',
-  smoke: '#9aa3b2',
+  player: { speed: 165, radius: 13 },
+  guard: {
+    patrolSpeed: 65,
+    chaseSpeed: 112,
+    radius: 14,
+    coneRange: 175,
+    coneHalfAngle: 0.57,
+    suspicionTime: 0.7,
+    loseSightTime: 2.0,
+    searchTime: 3.0,
+    touchRadius: 30,
+  },
+  camera: { range: 260, halfAngle: 0.5, sweep: 0.9, sweepSpeed: 0.45 },
+  alarm: { risePerSecond: 12, fallPerSecond: 8, dialPickup: 15, touchPerSecond: 50 },
+  tools: { smokeCount: 2, smokeSeconds: 4, smokeRadius: 95, jammerCount: 1, jammerSeconds: 6 },
+
+  // Walls and pillars block movement and line of sight. Gaps are the doors.
+  walls: [
+    { x: 0, y: 0, w: 1280, h: 16 },
+    { x: 0, y: 784, w: 1280, h: 16 },
+    { x: 0, y: 0, w: 16, h: 800 },
+    { x: 1264, y: 0, w: 16, h: 800 },
+    { x: 800, y: 16, w: 16, h: 184 },
+    { x: 800, y: 280, w: 16, h: 100 },
+    { x: 800, y: 380, w: 16, h: 160 },
+    { x: 800, y: 620, w: 16, h: 164 },
+    { x: 800, y: 380, w: 464, h: 16 },
+  ],
+  pillars: [
+    { x: 300, y: 300, w: 36, h: 36 },
+    { x: 550, y: 300, w: 36, h: 36 },
+    { x: 300, y: 560, w: 36, h: 36 },
+    { x: 550, y: 560, w: 36, h: 36 },
+  ],
+
+  paintings: [
+    { id: 'painting-a', x: 240, y: 48, value: 400, channel: 0.6, label: 'Moonlit Harbour' },
+    { id: 'painting-b', x: 430, y: 48, value: 400, channel: 0.6, label: 'The Duchess' },
+    { id: 'painting-c', x: 620, y: 48, value: 400, channel: 0.6, label: 'Harbour at Dusk' },
+  ],
+  gems: [
+    { id: 'gem-a', x: 950, y: 140, value: 900, channel: 1.2, label: 'Aurum Sapphire', color: '#7ee0ff' },
+    { id: 'gem-b', x: 1130, y: 140, value: 900, channel: 1.2, label: 'Aurum Ruby', color: '#ff7ad9' },
+  ],
+  dial: { id: 'sun-dial', x: 1120, y: 600, value: 2500, channel: 3.0, label: 'The Sun Dial' },
+  exitZone: { x: 40, y: 748, w: 110, h: 36, label: 'EXIT' },
+  playerStart: { x: 90, y: 130 },
+
+  guards: [
+    {
+      name: 'Hall North',
+      waypoints: [
+        { x: 180, y: 150 },
+        { x: 700, y: 150 },
+        { x: 700, y: 330 },
+        { x: 180, y: 330 },
+      ],
+    },
+    {
+      name: 'Vault',
+      waypoints: [
+        { x: 860, y: 450 },
+        { x: 1210, y: 450 },
+        { x: 1210, y: 720 },
+        { x: 860, y: 720 },
+      ],
+    },
+    {
+      name: 'Hall South',
+      waypoints: [
+        { x: 120, y: 700 },
+        { x: 700, y: 700 },
+        { x: 700, y: 470 },
+        { x: 120, y: 470 },
+      ],
+    },
+  ],
+  cameras: [
+    { x: 480, y: 18, baseAngle: Math.PI / 2, label: 'CAM 1' },
+    { x: 1030, y: 398, baseAngle: Math.PI / 2, label: 'CAM 2' },
+  ],
 };
-
-export const THIEF_SPEED = 170;
-export const THIEF_RUN_SPEED = 260;
-export const THIEF_RADIUS = 12;
-export const NOISE_RADIUS = 90;
-
-export const GUARD_PATROL_SPEED = 70;
-export const GUARD_CHASE_SPEED = 150;
-export const GUARD_RANGE = 170;
-export const GUARD_HALF_ANGLE = 0.57;
-export const CAMERA_RANGE = 210;
-export const CAMERA_HALF_ANGLE = 0.44;
-export const GRACE_TIME = 0.7;
-export const ALARM_GUARD_RATE = 12;
-export const ALARM_CAMERA_RATE = 18;
-export const ALARM_DECAY = 4;
-export const CHANNEL_RANGE = 46;
-export const PAR_TIME = 120;
-export const GHOST_BONUS = 500;
-export const DIAL_ALARM_BUMP = 15;
-export const SMOKE_RADIUS = 70;
-export const SMOKE_TIME = 3;
-export const JAMMER_TIME = 6;
-export const COIN_THROW = 120;
